@@ -252,6 +252,89 @@ def test_pending_input_commands_includes_goal(server):
     assert "goal" in server._PENDING_INPUT_COMMANDS
 
 
+def test_slash_exec_goal_gate_commands_preserve_the_active_goal(server, session):
+    """Desktop/TUI gate controls must mutate gates, never replace the goal text."""
+    from hermes_cli.goals import GoalManager
+
+    sid, session_key, _ = session
+    set_result = _call(
+        server,
+        "slash.exec",
+        command="/goal Deliver the voice-agent proof",
+        session_id=sid,
+    )
+    assert set_result["result"]["type"] == "send"
+
+    gate_command = 'python -c "raise SystemExit(0)"'
+    added = _call(
+        server,
+        "slash.exec",
+        command=f"/goal gate add {gate_command}",
+        session_id=sid,
+    )
+    assert added["result"]["type"] == "exec"
+    assert f"Gate added: $ {gate_command}" in added["result"]["output"]
+    state = GoalManager(session_key).state
+    assert state.goal == "Deliver the voice-agent proof"
+    assert [gate.command for gate in state.gates] == [gate_command]
+
+    listed = _call(
+        server, "slash.exec", command="/goal gate list", session_id=sid
+    )
+    assert f"- 1. $ {gate_command}" in listed["result"]["output"]
+
+    removed = _call(
+        server, "slash.exec", command="/goal gate remove 1", session_id=sid
+    )
+    assert removed["result"]["output"] == f"✓ Gate removed: $ {gate_command}"
+    assert GoalManager(session_key).state.gates == []
+
+    _call(
+        server,
+        "slash.exec",
+        command=f"/goal gate add {gate_command}",
+        session_id=sid,
+    )
+    cleared = _call(
+        server, "slash.exec", command="/goal gate clear", session_id=sid
+    )
+    assert cleared["result"]["output"] == "✓ Cleared 1 gate."
+    assert GoalManager(session_key).state.gates == []
+
+
+def test_slash_exec_goal_preserves_structured_completion_contract(server, session):
+    """Desktop/TUI goal creation must retain inline contract fields and a clean headline."""
+    from hermes_cli.goals import GoalManager
+
+    sid, session_key, _ = session
+    result = _call(
+        server,
+        "slash.exec",
+        command=(
+            "/goal Make the voice agent live\n"
+            "outcome: A physical iPhone can complete one goal.\n"
+            "verify: The deterministic gate passes after one correction.\n"
+            "preserve: Existing desktop sessions keep working.\n"
+            "scope: Hermes goal execution and the thin iOS wrapper only.\n"
+            "stop when: A hosted endpoint or signing identity is unavailable."
+        ),
+        session_id=sid,
+    )
+
+    assert result["result"]["type"] == "send"
+    assert result["result"]["message"] == "Make the voice agent live"
+    assert "Completion contract:" in result["result"]["notice"]
+    state = GoalManager(session_key).state
+    assert state.goal == "Make the voice agent live"
+    assert state.contract.to_dict() == {
+        "outcome": "A physical iPhone can complete one goal.",
+        "verification": "The deterministic gate passes after one correction.",
+        "constraints": "Existing desktop sessions keep working.",
+        "boundaries": "Hermes goal execution and the thin iOS wrapper only.",
+        "stop_when": "A hosted endpoint or signing identity is unavailable.",
+    }
+
+
 # ── active-goal recovery after compression exhaustion ───────────────
 
 
